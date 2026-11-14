@@ -747,6 +747,68 @@ _bundle_freetype() {
 }
 
 # ============================================================
+# 32-bit display libraries for the bundled Wine
+# ============================================================
+# The bundled Wine is a multilib build: 32-bit programs (winetricks' vc_redist.x86.exe
+# and the dotnet installers, for example) load a 32-bit display driver, and that driver
+# links against the 32-bit libX11 and libXext. Distros don't install those by default
+# (Fedora doesn't). Without them Wine logs "no driver could be loaded", the 32-bit
+# installer exits with an error and winetricks gives up.
+
+# libraries the 32-bit display driver cannot resolve, one per line
+_wine_x11_missing() {
+    local drv="$WINE_DIR/lib/wine/i386-unix/winex11.so"
+    [[ -f "$drv" ]] || return 0
+    ldd "$drv" 2>/dev/null | awk '/not found/ && $1 ~ /^libX/ { print $1 }' | sort -u || true
+}
+
+# 32-bit package that provides a library, for the given package manager
+_wine_x11_pkg() {
+    case "$1:$2" in
+        pacman:libX11.so*)  echo "lib32-libx11" ;;
+        pacman:libXext.so*) echo "lib32-libxext" ;;
+        dnf:libX11.so*)     echo "libX11.i686" ;;
+        dnf:libXext.so*)    echo "libXext.i686" ;;
+        apt:libX11.so*)     echo "libx11-6:i386" ;;
+        apt:libXext.so*)    echo "libxext6:i386" ;;
+    esac
+    return 0
+}
+
+# Install what's missing. Only warns if it can't: a false alarm must never block an
+# install that would have worked, and the warning appears before the long winetricks run.
+_wine_x11_resolve() {
+    local _missing _pm _lib _pkg _pkgs=()
+    _missing=$(_wine_x11_missing)
+    [[ -n "$_missing" ]] || return 0
+    if [[ $DRY_RUN -eq 1 ]]; then
+        info "32-bit display libraries missing (dry run, not installing): $(tr '\n' ' ' <<< "$_missing")"
+        return 0
+    fi
+    _pm="$(_detect_pm)"
+    while IFS= read -r _lib; do
+        _pkg="$(_wine_x11_pkg "$_pm" "$_lib")"
+        [[ -n "$_pkg" ]] && _pkgs+=("$_pkg")
+    done <<< "$_missing"
+    if [[ ${#_pkgs[@]} -gt 0 ]]; then
+        info "installing 32-bit display libraries: ${_pkgs[*]}"
+        if [[ "$_pm" == "apt" ]]; then
+            sudo dpkg --add-architecture i386 2>/dev/null || true
+            sudo apt update 2>/dev/null || true
+        fi
+        _pm_install "${_pkgs[@]}" || true
+    fi
+    _missing=$(_wine_x11_missing)
+    if [[ -n "$_missing" ]]; then
+        warn "32-bit libraries still missing: $(tr '\n' ' ' <<< "$_missing")"
+        warn "32-bit installers (vcrun2022, dotnet48) will probably fail with \"no driver could be loaded\""
+        info "install the 32-bit version of those libraries for your distribution, then re-run the installer"
+    else
+        ok "32-bit display libraries"
+    fi
+}
+
+# ============================================================
 # write both launcher scripts (PAINT + STUDIO)
 # ============================================================
 _write_launchers() {
@@ -1042,6 +1104,7 @@ if [[ $UPDATE_WINE -eq 1 ]]; then
 
         _extract_wine "$_wine_tar"
         _bundle_freetype
+        _wine_x11_resolve
 
         # Keep an existing opt-in pre-warm service pointed at the new runtime.
         _prewarm_service="$HOME/.config/systemd/user/csp-wineserver.service"
@@ -1421,6 +1484,9 @@ fi
 
 step "runtime + patches"
 info "installing fonts, libraries, and fixes."
+
+# 32-bit installers run by winetricks need these; see _wine_x11_resolve
+_wine_x11_resolve
 
 if [[ $SKIP_WINETRICKS -eq 1 ]]; then
     ok "winetricks (skipped)"
