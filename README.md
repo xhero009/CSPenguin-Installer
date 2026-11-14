@@ -33,7 +33,7 @@ cd CSPenguin-Installer
 ./install.sh
 ```
 
-The script downloads CSP and WebView2, sets up a Wine prefix, installs dependencies, applies patches, and creates desktop entries. You'll walk through the CSP installer when it pops up and pick a version (5.0.4 or 4.1.0) You can also bring your own installer via link or file.
+The script downloads CSP and WebView2, sets up a Wine prefix, installs dependencies, applies patches, and creates desktop entries. You pick the CSP version at the start (5.1.2, 5.1.0, 5.0.4, 4.1.0 and older ones are listed) and then walk through the CSP installer when it pops up. You can also bring your own installer via link or file.
 
 ## Updating
 
@@ -113,6 +113,21 @@ Find the installed version with `ls ~/.local/share/cspenguin/wine-*/`.
 - Timelapse should work 100%, but animation export at non-default framerates could break encoding; not thoroughly tested.
 - Wine updates require an exact matching timelapse patch set; newer upstream Wine releases are not selected automatically.
 - The installer can take a while, especially if downloading dotnet files.
+
+## CSP 5.1.x version notes
+
+If you pick 5.1.0, 5.1.1 or 5.1.2 the installer prints the notes below before it downloads anything, and again when it finishes. They come from CELSYS' [release notes](https://www.clipstudio.net/en/dl/release_note/latest/), not from testing under Wine, and CELSYS doesn't publish workarounds for them.
+
+| CSP version | Known problem | Fixed by CELSYS in |
+| --- | --- | --- |
+| 5.1.0 | Quick Effects can freeze on high refresh rate monitors | 5.1.1 |
+| 5.1.0 - 5.1.1 | The app can hang when starting the 30-day free trial on high refresh rate monitors | 5.1.2 |
+| 5.1.0 - 5.1.3 | The first launch after installing in a new environment can be slow (a fresh Wine prefix counts as one, so let it finish) | 5.1.4 |
+| 5.1.0 - 5.1.3 | Behavior of the full-width IME shortcut changed in 5.1.0 | reverted in 5.1.4 |
+
+If you have a high refresh rate monitor, 5.1.2 or newer avoids both freezes.
+
+CELSYS doesn't keep old 5.x installers on its download page. The installer fetches 5.1.0 from the same CDN path pattern it uses for the other versions, and if CELSYS ever removes it the script stops with a message instead of a bare download error. In that case download the installer yourself and use the "custom installer" option. Installers named the way CELSYS names them (for example `CSP_510w_setup.exe`) get the matching notes even when you supply them yourself.
 
 ## Support
 

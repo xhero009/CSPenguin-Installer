@@ -119,6 +119,10 @@ STUDIO_EXE="$WINEPREFIX/drive_c/Program Files/CELSYS/CLIP STUDIO 1.5/CLIP STUDIO
 SYS32="$WINEPREFIX/drive_c/windows/system32"
 LOG_FILE="${DOWNLOAD_DIR}/csp-install.log"
 
+# Number from CELSYS' installer name (CSP_<code>w_setup.exe, e.g. 510 = 5.1.0).
+# Stays empty in --update mode, where no installer is chosen.
+CSP_CODE=""
+
 # helpers
 run() {
     [[ $DRY_RUN -eq 1 ]] && return 0
@@ -395,6 +399,60 @@ download_progress() {
         "$(printf '█%.0s' $(seq 1 $bw))" "$((total / 1048576))" "$((total / 1048576))"
     mv "$tmp" "$dest"
     ok "$name"
+}
+
+# pull the version code out of a CELSYS installer name, so a user-supplied
+# installer gets the same version notes as a preset one. Prints nothing if the
+# name doesn't follow CSP_<code>w_setup.exe (e.g. "CSP_510w_setup (1).exe" -> 510).
+_csp_code_from_name() {
+    if [[ "$1" =~ [Cc][Ss][Pp]_([0-9]+)w ]]; then
+        echo "${BASH_REMATCH[1]}"
+    fi
+    return 0
+}
+
+# Known problems of specific CSP releases, one plain-text line each. Taken from
+# CELSYS' release notes (https://www.clipstudio.net/en/dl/release_note/latest/);
+# only things that matter for an install under Wine are listed here.
+_csp_version_notes() {
+    case "$1" in
+        510)
+            echo "5.1.0: Quick Effects can freeze on high refresh rate monitors (fixed by CELSYS in 5.1.1)"
+            echo "5.1.0/5.1.1: the app can hang when starting the free trial on high refresh rate monitors (fixed in 5.1.2)"
+            echo "5.1.0-5.1.3: the first launch after installing can be slow (fixed in 5.1.4), let it finish"
+            echo "if your monitor is high refresh rate, 5.1.2 or newer avoids both freezes"
+            ;;
+        511)
+            echo "5.1.1: the app can hang when starting the free trial on high refresh rate monitors (fixed by CELSYS in 5.1.2)"
+            echo "5.1.0-5.1.3: the first launch after installing can be slow (fixed in 5.1.4), let it finish"
+            ;;
+        512)
+            echo "5.1.0-5.1.3: the first launch after installing can be slow (fixed by CELSYS in 5.1.4), let it finish"
+            ;;
+    esac
+    return 0
+}
+
+# Stop early with a useful message when CELSYS no longer serves the chosen
+# installer. Only a definite 404/410 stops the install: other results (403,
+# timeouts, servers that dislike HEAD requests) fall through to the normal
+# download, which already copes with them.
+_check_csp_url() {
+    [[ $DRY_RUN -eq 1 ]] && return 0
+    [[ -s "$DOWNLOAD_DIR/$CSP_EXE_NAME" ]] && return 0
+    local _http
+    _http=$(curl -sSIL -m 30 -o /dev/null -w '%{http_code}' "$CSP_URL" 2>/dev/null || true)
+    case "$_http" in
+        404|410)
+            die "$CSP_EXE_NAME was not found at $CSP_URL (HTTP $_http)
+The server no longer has this file (if it's a preset version, CELSYS may have
+removed it). Download the installer yourself and re-run this script with the
+\"custom installer\" option."
+            ;;
+        2*) ;;
+        *)  _log "installer URL check inconclusive (HTTP ${_http:-none}), trying the download anyway" ;;
+    esac
+    return 0
 }
 
 _detect_pm() {
@@ -1101,34 +1159,40 @@ echo -e "      /'\_   _/\`\\  ${DIM}once or twice to install packages${RESET}"
 echo -e "      \___)=(___/  ${DIM}and set system limits.${RESET}"
 echo ""
 echo ""
+# "<code>|<label>"; the code is the number in CELSYS' installer name,
+# CSP_<code>w_setup.exe. The first entry is the default.
+CSP_VERSIONS=(
+    "512|5.1.2 (latest)"
+    "510|5.1.0"
+    "504|5.0.4 (perpetual)"
+    "410|4.1.0"
+    "4010|4.0.10 (perpetual)"
+    "323|3.2.3"
+    "308|3.0.8 (perpetual)"
+    "234|2.3.4"
+    "206|2.0.6 (perpetual)"
+    "1132|1.13.2"
+)
+_custom_choice=$(( ${#CSP_VERSIONS[@]} + 1 ))
+
 echo -e "  ${BOLD}Which version of Clip Studio Paint?${RESET}"
-echo "    1) 5.1.2 (latest)"
-echo "    2) 5.0.4 (perpetual)"
-echo "    3) 4.1.0"
-echo "    4) 4.0.10 (perpetual)"
-echo "    5) 3.2.3"
-echo "    6) 3.0.8 (perpetual)"
-echo "    7) 2.3.4"
-echo "    8) 2.0.6 (perpetual)"
-echo "    9) 1.13.2"
-echo "    10) custom installer path or URL"
+for _i in "${!CSP_VERSIONS[@]}"; do
+    echo "    $((_i + 1))) ${CSP_VERSIONS[$_i]#*|}"
+done
+echo "    ${_custom_choice}) custom installer path or URL"
 echo ""
 
 CSP_VERSION="" CSP_URL="" CSP_EXE_NAME=""
 while true; do
     read -rp "  choice [1]: " choice </dev/tty
     choice="${choice:-1}"
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( 10#$choice >= 1 && 10#$choice <= ${#CSP_VERSIONS[@]} )); then
+        _entry="${CSP_VERSIONS[$((10#$choice - 1))]}"
+        CSP_VERSION="${_entry%%|*}"
+        break
+    fi
     case "$choice" in
-        1) CSP_VERSION="512"; break ;;
-        2) CSP_VERSION="504"; break ;;
-        3) CSP_VERSION="410"; break ;;
-        4) CSP_VERSION="4010"; break ;;
-        5) CSP_VERSION="323"; break ;;
-        6) CSP_VERSION="308"; break ;;
-        7) CSP_VERSION="234"; break ;;
-        8) CSP_VERSION="206"; break ;;
-        9) CSP_VERSION="1132"; break ;;
-        10)
+        "$_custom_choice")
             read -rp "  path or URL: " custom </dev/tty
             if [[ "$custom" == http* ]]; then
                 CSP_URL="$custom"
@@ -1146,13 +1210,31 @@ while true; do
                 echo "  file not found: $custom"; continue
             fi
             break ;;
-        *) echo "  pick 1-10" ;;
+        *) echo "  pick 1-${_custom_choice}" ;;
     esac
 done
 
 if [[ "$CSP_VERSION" != "custom" ]]; then
     CSP_URL="https://vd.clipstudio.net/clipcontent/paint/app/${CSP_VERSION}/CSP_${CSP_VERSION}w_setup.exe"
     CSP_EXE_NAME="CSP_${CSP_VERSION}w_setup.exe"
+    CSP_CODE="$CSP_VERSION"
+else
+    CSP_CODE="$(_csp_code_from_name "$CSP_EXE_NAME")"
+fi
+_log "selected installer: $CSP_EXE_NAME (code '${CSP_CODE:-unknown}')"
+
+# surface known problems of this release before anything is downloaded
+if [[ -n "$CSP_CODE" ]]; then
+    _notes="$(_csp_version_notes "$CSP_CODE")"
+    if [[ -n "$_notes" ]]; then
+        echo ""
+        echo -e "  ${YELLOW}${BOLD}known issues in this CSP version${RESET} ${DIM}(from CELSYS' release notes)${RESET}"
+        while IFS= read -r _line; do
+            echo -e "    ${YELLOW}!${RESET} ${_line}"
+            _log "NOTE: $_line"
+        done <<< "$_notes"
+        echo ""
+    fi
 fi
 # [1/7] dependencies
 
@@ -1207,6 +1289,7 @@ _need_wine=0
 [[ ! -x "$WINE_BIN" ]] && _need_wine=1
 
 if [[ -n "${CSP_URL:-}" ]]; then
+    _check_csp_url
     download_progress "Clip Studio Paint" "$CSP_URL" "$DOWNLOAD_DIR/$CSP_EXE_NAME"
 else
     ok "Clip Studio Paint (local file)"
@@ -1723,6 +1806,16 @@ echo -e "    ${DIM}thumbnails${RESET}    enable in file manager preview settings
 echo -e "                   (Dolphin: Configure Dolphin > Interface > Previews"
 echo -e "                    > tick \"Clip Studio Paint File\", then restart Dolphin)"
 echo ""
+if [[ -n "$CSP_CODE" ]]; then
+    _notes="$(_csp_version_notes "$CSP_CODE")"
+    if [[ -n "$_notes" ]]; then
+        echo -e "  ${AMBER}known issues in this CSP version${RESET}"
+        while IFS= read -r _line; do
+            echo -e "    ${DIM}${_line}${RESET}"
+        done <<< "$_notes"
+        echo ""
+    fi
+fi
 echo -e "  ${DIM}something not working? open an issue at${RESET}"
 echo -e "  ${DIM}https://github.com/parka6060/CSPenguin-Installer${RESET}"
 echo ""
