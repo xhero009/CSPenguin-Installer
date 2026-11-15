@@ -92,6 +92,7 @@ This will migrate any old rules previous versions created and apply the current 
 10. `.clip` file association so double-clicking opens CSP
 11. KDE window rules (KDE only) so ribbon bar dropdowns appear on top of CSP instead of behind it. If this doesn't apply properly you can right click your CSP icon in your taskbar or set up window rules yourself!
 12. A wineserver pre-warm service so CSP launches a bit faster
+13. NTSync (asks first): if your kernel is 6.14 or newer but `/dev/ntsync` is missing, the installer offers to load the `ntsync` module and write `/etc/modules-load.d/ntsync.conf` so it loads at boot (needs sudo)
 
 > **Note:** `.clip` file thumbnails need to be **enabled in your file manager's preview settings** — on Dolphin/KDE, open _Configure Dolphin → Interface → Previews_ and tick the "Clip Studio Paint File" entry (after running the installer, restart your file manager).
 
@@ -113,6 +114,8 @@ Find the installed version with `ls ~/.local/share/cspenguin/wine-*/`.
 - Timelapse should work 100%, but animation export at non-default framerates could break encoding; not thoroughly tested.
 - Wine updates require an exact matching timelapse patch set; newer upstream Wine releases are not selected automatically.
 - The installer can take a while, especially if downloading dotnet files.
+- Laggy shortcuts, undo or brush strokes: Wine 11 needs the kernel's NTSync driver for fast synchronisation. Check with `ls -l /dev/ntsync`; if it's missing run `sudo modprobe ntsync` and `echo ntsync | sudo tee /etc/modules-load.d/ntsync.conf`, then restart CSP (and the wineserver service if you enabled pre-warm). Re-running the installer with `--update` offers to do this for you, and `--debug` shows whether the running wineserver is using it. Fedora is moving to load the module by default, but not every release has it yet.
+- Pen input on Wayland reaches Wine through XWayland. Holding Ctrl, Shift or Alt can make stylus input drop out ([Wine bug 54492](https://list.winehq.org/archives/list/wine-bugs@list.winehq.org/thread/QEEB6OS7LOLO757FBLWKDGCIDV2P5R2F), still open). Some recent distros (Fedora KDE, for one) don't install a Plasma X11 session by default, and I don't know of a workaround yet.
 
 ## CSP 5.1.x version notes
 

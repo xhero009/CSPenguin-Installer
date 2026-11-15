@@ -809,6 +809,106 @@ _wine_x11_resolve() {
 }
 
 # ============================================================
+# NTSync: kernel-assisted synchronisation for Wine 11
+# ============================================================
+# Wine 11 uses the kernel's ntsync driver (/dev/ntsync, Linux 6.14+) for its
+# locking primitives. Without it Wine falls back to round-trips through the
+# wineserver process, which shows up as lag on shortcuts, undo and pen strokes.
+# The driver ships with the kernel, but many distros don't load it by default.
+# WINEESYNC/WINEFSYNC (set in the launchers) are ignored by vanilla Wine.
+_NTSYNC_DEV="/dev/ntsync"
+_NTSYNC_CONF="/etc/modules-load.d/ntsync.conf"
+
+_ntsync_ready() { [[ -c "$_NTSYNC_DEV" && -r "$_NTSYNC_DEV" && -w "$_NTSYNC_DEV" ]]; }
+
+# 0 when the running kernel is at least 6.14 (or its version can't be parsed,
+# in which case we simply try)
+_kernel_has_ntsync() {
+    local _kver _major _minor
+    _kver="$(uname -r 2>/dev/null || true)"
+    _major="${_kver%%.*}"
+    _minor="${_kver#*.}"; _minor="${_minor%%[!0-9]*}"
+    [[ "$_major" =~ ^[0-9]+$ && "$_minor" =~ ^[0-9]+$ ]] || return 0
+    (( 10#$_major > 6 || (10#$_major == 6 && 10#$_minor >= 14) ))
+}
+
+# Sets _NTSYNC_CHANGED=1 when the module was loaded just now, so callers know
+# a wineserver that is already running has to be restarted to pick it up.
+_NTSYNC_CHANGED=0
+_ntsync_setup() {
+    if _ntsync_ready; then
+        ok "NTSync (faster Wine sync)"
+        return 0
+    fi
+    if ! _kernel_has_ntsync; then
+        warn "NTSync needs Linux 6.14 or newer (this is $(uname -r))"
+        info "Wine still works without it, but shortcuts and pen strokes may lag"
+        info "a newer kernel fixes that"
+        return 0
+    fi
+    if [[ -c "$_NTSYNC_DEV" ]]; then
+        warn "$_NTSYNC_DEV exists but your user can't use it, so Wine falls back to slow sync"
+        info "check its permissions: ls -l $_NTSYNC_DEV"
+        return 0
+    fi
+
+    info "NTSync is off. It makes Wine's input and undo much more responsive."
+    if [[ $DRY_RUN -eq 1 ]]; then
+        ok "NTSync (dry run: would load the ntsync module and enable it at boot)"
+        return 0
+    fi
+    local _ans="Y"
+    printf "  ${TEAL}│${RESET}   " || true
+    read -rp "enable NTSync now (needs sudo)? [Y/n] " _ans </dev/tty || _ans="Y"
+    _log "ntsync prompt: answer='${_ans:-<empty>}'"
+    if [[ "${_ans,,}" =~ ^n ]]; then
+        warn "NTSync left off; Wine will use slower sync"
+        return 0
+    fi
+
+    local _i
+    if sudo modprobe ntsync 2>/dev/null; then
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+            _ntsync_ready && break
+            sleep 0.3
+        done
+    fi
+    if ! _ntsync_ready; then
+        warn "could not enable NTSync (your kernel may not include the ntsync module)"
+        info "Wine will still work, but with slower sync"
+        return 0
+    fi
+    _NTSYNC_CHANGED=1
+    # make it persistent across reboots
+    if echo ntsync | sudo tee "$_NTSYNC_CONF" >/dev/null 2>&1; then
+        ok "NTSync enabled (loads at boot)"
+    else
+        warn "NTSync is on for this session only: could not write $_NTSYNC_CONF"
+        info "to keep it, run: echo ntsync | sudo tee $_NTSYNC_CONF"
+    fi
+    return 0
+}
+
+# A wineserver that is already running chose its sync backend when it started,
+# so after NTSync was switched on it has to be restarted. Never kill it under a
+# running CSP: that would lose unsaved work.
+_ntsync_restart_wineserver() {
+    [[ $_NTSYNC_CHANGED -eq 1 && $DRY_RUN -eq 0 ]] || return 0
+    if pgrep -f 'CLIPStudioPaint\.exe|CLIPStudio\.exe' >/dev/null 2>&1; then
+        warn "CSP is running: close it completely and reopen it to start using NTSync"
+        return 0
+    fi
+    if systemctl --user is-active --quiet csp-wineserver.service 2>/dev/null; then
+        if systemctl --user restart csp-wineserver.service 2>/dev/null; then
+            ok "wineserver restarted with NTSync"
+        else
+            warn "could not restart the wineserver service; log out and back in to start using NTSync"
+        fi
+    fi
+    return 0
+}
+
+# ============================================================
 # write both launcher scripts (PAINT + STUDIO)
 # ============================================================
 _write_launchers() {
@@ -1105,6 +1205,7 @@ if [[ $UPDATE_WINE -eq 1 ]]; then
         _extract_wine "$_wine_tar"
         _bundle_freetype
         _wine_x11_resolve
+        _ntsync_setup
 
         # Keep an existing opt-in pre-warm service pointed at the new runtime.
         _prewarm_service="$HOME/.config/systemd/user/csp-wineserver.service"
@@ -1190,6 +1291,8 @@ if [[ $UPDATE_ONLY -eq 1 ]]; then
 
     # registry tweaks
     step "configuration"
+    _ntsync_setup
+    _ntsync_restart_wineserver
     run wine reg add "HKCU\\Software\\Wine\\WineDbg" /v ShowCrashDialog /t REG_DWORD /d 0 /f || true
     run wine reg add "HKLM\\System\\CurrentControlSet\\Services\\PlugPlay" /v Start /t REG_DWORD /d 4 /f || true
     run wine reg add "HKLM\\System\\CurrentControlSet\\Services\\WineBus" /v Start /t REG_DWORD /d 4 /f || true
@@ -1437,6 +1540,8 @@ fi
 
 step "wine prefix"
 info "setting up a fresh Wine environment for CSP."
+# before any wineserver (re)starts, so it opens /dev/ntsync
+_ntsync_setup
 if [[ $DRY_RUN -eq 0 ]]; then
     export WINEPREFIX WINEARCH WINESERVER="$WINESERVER_BIN"
     "$WINESERVER_BIN" -k 2>/dev/null || true

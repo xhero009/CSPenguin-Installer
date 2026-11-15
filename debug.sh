@@ -20,7 +20,7 @@ grep -E '^(NAME|VERSION)=' /etc/os-release 2>/dev/null | sed 's/^/  /'
 info "kernel: $(uname -r)"
 info "desktop: ${XDG_CURRENT_DESKTOP:-unknown}"
 if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-    warn "display: Wayland (Wine tablet/pen pressure requires X11 or XWayland)"
+    warn "display: Wayland (the pen reaches Wine through XWayland; holding Ctrl/Shift/Alt can drop stylus input, see Wine bug 54492)"
 elif [[ -n "${DISPLAY:-}" ]]; then
     ok "display: X11 ($DISPLAY)"
 else
@@ -94,14 +94,53 @@ else
 fi
 
 echo ""
-echo "[esync / fsync]"
-_nofile="$(ulimit -n 2>/dev/null || echo 0)"
-if [[ "$_nofile" -ge 524288 ]]; then
-    ok "file descriptor limit: $_nofile"
-else
-    warn "file descriptor limit: $_nofile (should be 524288 for esync)"
+echo "[ntsync]"
+# Wine 11 uses the kernel's ntsync driver for its locking. Without it Wine falls
+# back to slow round-trips through the wineserver (laggy shortcuts, undo, pen).
+_kmajor="$(uname -r | cut -d. -f1)"
+_kminor="$(uname -r | cut -d. -f2 | tr -cd '0-9')"
+if [[ "$_kmajor" =~ ^[0-9]+$ && "$_kminor" =~ ^[0-9]+$ ]] \
+   && (( 10#$_kmajor < 6 || (10#$_kmajor == 6 && 10#${_kminor:-0} < 14) )); then
+    warn "kernel $(uname -r) is older than 6.14, which NTSync needs"
 fi
-grep -rq 'cspenguin' /etc/security/limits.d/ 2>/dev/null && ok "limits.d entry found" || info "no limits.d entry"
+if [[ -c /dev/ntsync ]]; then
+    if [[ -r /dev/ntsync && -w /dev/ntsync ]]; then
+        ok "/dev/ntsync present and usable ($(stat -c '%A' /dev/ntsync 2>/dev/null))"
+    else
+        warn "/dev/ntsync exists but your user cannot use it ($(ls -l /dev/ntsync 2>/dev/null))"
+    fi
+else
+    warn "/dev/ntsync missing: Wine will use slow sync (fix: sudo modprobe ntsync)"
+fi
+if lsmod 2>/dev/null | grep -q '^ntsync'; then
+    ok "ntsync kernel module loaded"
+else
+    info "ntsync kernel module not listed by lsmod (fine if built into the kernel)"
+fi
+if grep -rqs 'ntsync' /etc/modules-load.d/ /usr/lib/modules-load.d/ 2>/dev/null; then
+    ok "ntsync is set to load at boot"
+else
+    info "no modules-load.d entry for ntsync (needed so it survives a reboot)"
+fi
+_ws_pids="$(pgrep -x wineserver 2>/dev/null || true)"
+if [[ -n "$_ws_pids" ]]; then
+    for _p in $_ws_pids; do
+        _n="$(find "/proc/$_p/fd" -lname '*ntsync*' 2>/dev/null | wc -l)"
+        if [[ "${_n:-0}" -gt 0 ]]; then
+            ok "wineserver $_p is using NTSync ($_n handles)"
+        else
+            warn "wineserver $_p is NOT using NTSync (restart it after enabling NTSync)"
+        fi
+    done
+else
+    info "no wineserver running (start CSP, then run this again to check)"
+fi
+echo ""
+echo "[esync / fsync (legacy)]"
+info "WINEESYNC/WINEFSYNC are ignored by the bundled vanilla Wine; NTSync above is what counts"
+_nofile="$(ulimit -n 2>/dev/null || echo 0)"
+info "file descriptor limit: $_nofile"
+grep -rq 'cspenguin' /etc/security/limits.d/ 2>/dev/null && info "limits.d entry found" || info "no limits.d entry"
 
 echo ""
 echo "[vulkan]"
